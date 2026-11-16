@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { VRM, VRMUtils } from '@pixiv/three-vrm';
+import { VRM, VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 
 // Configuration de la scène Three.js
 const scene = new THREE.Scene();
@@ -13,7 +13,7 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 document.body.appendChild(renderer.domElement);
 
-// Éclairage doux pour le personnage anime
+// Éclairage
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
 scene.add(ambientLight);
 
@@ -21,27 +21,38 @@ const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
 directionalLight.position.set(1, 1, 1).normalize();
 scene.add(directionalLight);
 
-// Chargement du modèle VRM
+// Chargement du modèle VRM avec le plugin officiel
 let currentVRM = undefined;
 const loader = new GLTFLoader();
 
-loader.load(
-  './assets/perso.vrm',
-  (gltf) => {
-    VRM.from(gltf).then((vrm) => {
-      // Nettoyage et optimisation automatique du VRM
-      VRMUtils.removeUnnecessaryVertices(gltf.scene);
-      VRMUtils.removeUnnecessaryJoints(gltf.scene);
+// Enregistrement indispensable du plugin VRM pour Three-VRM v3
+loader.register((parser) => {
+  return new VRMLoaderPlugin(parser);
+});
 
+loader.load(
+  './assets/perso.vrm', // Assure-toi que ton fichier s'appelle bien comme ça dans assets/
+  (gltf) => {
+    // Récupération du VRM via les données utilisateur du GLTF
+    const vrm = gltf.userData.vrm;
+
+    if (vrm) {
       scene.add(vrm.scene);
       currentVRM = vrm;
 
       // Rotation pour qu'elle soit face à la caméra
       vrm.scene.rotation.y = Math.PI;
-    });
+      console.log('Modèle VRM chargé avec succès !', vrm);
+    } else {
+      console.error("Le fichier chargé n'est pas un VRM valide.");
+    }
   },
-  (progress) => console.log('Chargement du modèle...'),
-  (error) => console.error('Erreur de chargement VRM :', error)
+  (progress) => {
+    console.log('Chargement : ' + (progress.loaded / progress.total * 100) + '%');
+  },
+  (error) => {
+    console.error('Erreur lors du chargement du fichier VRM :', error);
+  }
 );
 
 // Boucle d'animation principale
@@ -53,7 +64,6 @@ function animate() {
   const delta = clock.getDelta();
 
   if (currentVRM) {
-    // Met à jour la respiration et le clignement automatique des yeux
     currentVRM.update(delta);
   }
 
@@ -62,7 +72,7 @@ function animate() {
 
 animate();
 
-// Gestion du redimensionnement de la fenêtre
+// Redimensionnement
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
