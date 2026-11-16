@@ -1,137 +1,171 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
-import { VRM, VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 
-// Configuration de la scène Three.js
 const scene = new THREE.Scene();
 
 const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 20);
-camera.position.set(0, 1.4, 1.5); // Centré à hauteur du visage
+camera.position.set(0, 1.4, 3); // reculé pour voir le corps (les anims sont en pied)
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 document.body.appendChild(renderer.domElement);
 
-// Éclairage
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-scene.add(ambientLight);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(1, 1, 1).normalize();
+scene.add(dirLight);
 
-const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-directionalLight.position.set(1, 1, 1).normalize();
-scene.add(directionalLight);
+// ---------- Correspondance os Mixamo -> os humanoïdes VRM ----------
+const mixamoVRMRigMap = {
+  mixamorigHips: 'hips', mixamorigSpine: 'spine', mixamorigSpine1: 'chest',
+  mixamorigSpine2: 'upperChest', mixamorigNeck: 'neck', mixamorigHead: 'head',
+  mixamorigLeftShoulder: 'leftShoulder', mixamorigLeftArm: 'leftUpperArm',
+  mixamorigLeftForeArm: 'leftLowerArm', mixamorigLeftHand: 'leftHand',
+  mixamorigLeftHandThumb1: 'leftThumbMetacarpal', mixamorigLeftHandThumb2: 'leftThumbProximal',
+  mixamorigLeftHandThumb3: 'leftThumbDistal', mixamorigLeftHandIndex1: 'leftIndexProximal',
+  mixamorigLeftHandIndex2: 'leftIndexIntermediate', mixamorigLeftHandIndex3: 'leftIndexDistal',
+  mixamorigLeftHandMiddle1: 'leftMiddleProximal', mixamorigLeftHandMiddle2: 'leftMiddleIntermediate',
+  mixamorigLeftHandMiddle3: 'leftMiddleDistal', mixamorigLeftHandRing1: 'leftRingProximal',
+  mixamorigLeftHandRing2: 'leftRingIntermediate', mixamorigLeftHandRing3: 'leftRingDistal',
+  mixamorigLeftHandPinky1: 'leftLittleProximal', mixamorigLeftHandPinky2: 'leftLittleIntermediate',
+  mixamorigLeftHandPinky3: 'leftLittleDistal',
+  mixamorigRightShoulder: 'rightShoulder', mixamorigRightArm: 'rightUpperArm',
+  mixamorigRightForeArm: 'rightLowerArm', mixamorigRightHand: 'rightHand',
+  mixamorigRightHandThumb1: 'rightThumbMetacarpal', mixamorigRightHandThumb2: 'rightThumbProximal',
+  mixamorigRightHandThumb3: 'rightThumbDistal', mixamorigRightHandIndex1: 'rightIndexProximal',
+  mixamorigRightHandIndex2: 'rightIndexIntermediate', mixamorigRightHandIndex3: 'rightIndexDistal',
+  mixamorigRightHandMiddle1: 'rightMiddleProximal', mixamorigRightHandMiddle2: 'rightMiddleIntermediate',
+  mixamorigRightHandMiddle3: 'rightMiddleDistal', mixamorigRightHandRing1: 'rightRingProximal',
+  mixamorigRightHandRing2: 'rightRingIntermediate', mixamorigRightHandRing3: 'rightRingDistal',
+  mixamorigRightHandPinky1: 'rightLittleProximal', mixamorigRightHandPinky2: 'rightLittleIntermediate',
+  mixamorigRightHandPinky3: 'rightLittleDistal',
+  mixamorigLeftUpLeg: 'leftUpperLeg', mixamorigLeftLeg: 'leftLowerLeg',
+  mixamorigLeftFoot: 'leftFoot', mixamorigLeftToeBase: 'leftToes',
+  mixamorigRightUpLeg: 'rightUpperLeg', mixamorigRightLeg: 'rightLowerLeg',
+  mixamorigRightFoot: 'rightFoot', mixamorigRightToeBase: 'rightToes',
+};
 
-let currentVRM = null;
-let mixer = null;
-const clock = new THREE.Clock();
+// Convertit un clip FBX Mixamo en clip utilisable par le VRM
+function loadMixamoAnimation(url, vrm) {
+  const loader = new FBXLoader();
+  return loader.loadAsync(url).then((asset) => {
+    const clip = THREE.AnimationClip.findByName(asset.animations, 'mixamo.com') || asset.animations[0];
+    const tracks = [];
 
-// Configuration du chargeur GLTF avec le plugin VRM
-const gltfLoader = new GLTFLoader();
-gltfLoader.register((parser) => new VRMLoaderPlugin(parser));
+    const restRotationInverse = new THREE.Quaternion();
+    const parentRestWorldRotation = new THREE.Quaternion();
+    const _quatA = new THREE.Quaternion();
 
-// 1. Chargement du modèle VRM
-gltfLoader.load(
+    // Ratio de taille hanches Mixamo / hanches VRM
+    const motionHipsHeight = asset.getObjectByName('mixamorigHips').position.y;
+    const vrmHipsY = vrm.humanoid.getNormalizedBoneNode('hips').getWorldPosition(new THREE.Vector3()).y;
+    const vrmRootY = vrm.scene.getWorldPosition(new THREE.Vector3()).y;
+    const hipsPositionScale = Math.abs(vrmHipsY - vrmRootY) / motionHipsHeight;
+
+    clip.tracks.forEach((track) => {
+      const [mixamoRigName, propertyName] = track.name.split('.');
+      const vrmBoneName = mixamoVRMRigMap[mixamoRigName];
+      const vrmNodeName = vrm.humanoid?.getNormalizedBoneNode(vrmBoneName)?.name;
+      const mixamoRigNode = asset.getObjectByName(mixamoRigName);
+
+      if (vrmNodeName != null) {
+        mixamoRigNode.getWorldQuaternion(restRotationInverse).invert();
+        mixamoRigNode.parent.getWorldQuaternion(parentRestWorldRotation);
+
+        if (track instanceof THREE.QuaternionKeyframeTrack) {
+          for (let i = 0; i < track.values.length; i += 4) {
+            const flatQuaternion = track.values.slice(i, i + 4);
+            _quatA.fromArray(flatQuaternion);
+            _quatA.premultiply(parentRestWorldRotation).multiply(restRotationInverse);
+            _quatA.toArray(flatQuaternion);
+            flatQuaternion.forEach((v, index) => { track.values[index + i] = v; });
+          }
+          tracks.push(new THREE.QuaternionKeyframeTrack(
+            `${vrmNodeName}.${propertyName}`,
+            track.times,
+            track.values.map((v, i) => (vrm.meta?.metaVersion === '0' && i % 2 === 0 ? -v : v)),
+          ));
+        } else if (track instanceof THREE.VectorKeyframeTrack) {
+          const value = track.values.map((v, i) =>
+            (vrm.meta?.metaVersion === '0' && i % 3 !== 1 ? -v : v) * hipsPositionScale);
+          tracks.push(new THREE.VectorKeyframeTrack(`${vrmNodeName}.${propertyName}`, track.times, value));
+        }
+      }
+    });
+
+    return new THREE.AnimationClip('vrmAnimation', clip.duration, tracks);
+  });
+}
+
+// ---------- Chargement du VRM ----------
+let currentVRM;
+let mixer;
+const actions = {};
+let currentAction;
+
+const loader = new GLTFLoader();
+loader.register((parser) => new VRMLoaderPlugin(parser));
+
+loader.load(
   './assets/perso.vrm',
-  (gltf) => {
+  async (gltf) => {
     const vrm = gltf.userData.vrm;
-    if (!vrm) {
-      console.error("Le fichier chargé n'est pas un VRM valide.");
-      return;
-    }
+    if (!vrm) { console.error("Pas un VRM valide."); return; }
 
+    VRMUtils.rotateVRM0(vrm); // gère l'orientation des VRM 0.x (à la place de rotation.y = Math.PI)
     scene.add(vrm.scene);
     currentVRM = vrm;
-    vrm.scene.rotation.y = Math.PI; // Face à la caméra
 
-    console.log('Modèle VRM chargé avec succès !');
+    mixer = new THREE.AnimationMixer(vrm.scene);
 
-    // 2. Une fois le VRM chargé, on charge l'animation Mixamo
-    loadMixamoAnimation('./assets/animations/typing.fbx', vrm);
+    // Charge les 3 animations
+    const names = ['gaming', 'sleeping', 'typing'];
+    for (const name of names) {
+      try {
+        const clip = await loadMixamoAnimation(`./assets/${name}.fbx`, vrm);
+        actions[name] = mixer.clipAction(clip);
+      } catch (e) {
+        console.error(`Erreur chargement ${name}.fbx`, e);
+      }
+    }
+
+    playAnimation('typing');
+    console.log('VRM + animations prêts', Object.keys(actions));
   },
-  (progress) => console.log('Chargement VRM...'),
-  (error) => console.error('Erreur chargement VRM :', error)
+  undefined,
+  (error) => console.error('Erreur VRM :', error),
 );
 
-// Fonction pour charger et adapter une animation Mixamo au VRM
-function loadMixamoAnimation(url, vrm) {
-  const fbxLoader = new FBXLoader();
-  fbxLoader.load(
-    url,
-    (fbx) => {
-      const clip = fbx.animations[0];
-      if (!clip) {
-        console.error("Aucune animation trouvée dans ce fichier FBX.");
-        return;
-      }
-
-      // Adaptation des pistes d'animation Mixamo pour correspondre au squelette du VRM
-      const tracks = [];
-      const restRotationInverse = new THREE.Quaternion();
-      const parentRestRotationInverse = new THREE.Quaternion();
-
-      clip.tracks.forEach((track) => {
-        const trackSplitted = track.name.split('.');
-        const mixamoBoneName = trackSplitted[0];
-        const propertyName = trackSplitted[1];
-
-        // Recherche de l'os correspondant dans le VRM Humanoid
-        // On convertit le nom Mixamo (ex: mixamorigSpine) en nom standard VRM
-        let vrmBoneName = mixamoBoneName.replace('mixamorig', '');
-        // Première lettre en minuscule pour correspondre aux bones VRM
-        vrmBoneName = vrmBoneName.charAt(0).toLowerCase() + vrmBoneName.slice(1);
-
-        const vrmNode = vrm.humanoid.getBoneNode(vrmBoneName);
-
-        if (vrmNode) {
-          const trackName = `${vrmNode.name}.${propertyName}`;
-
-          if (propertyName === 'position') {
-            // Ajustement de l'échelle (Mixamo est en cm, Three.js en mètres)
-            for (let i = 0; i < track.values.length; i++) {
-              track.values[i] *= 0.01;
-            }
-            tracks.push(new THREE.VectorKeyframeTrack(trackName, track.times, track.values));
-          } else if (propertyName === 'quaternion') {
-            tracks.push(new THREE.QuaternionKeyframeTrack(trackName, track.times, track.values));
-          }
-        }
-      });
-
-      const targetClip = new THREE.AnimationClip('vrmAnimation', clip.duration, tracks);
-
-      // Lancement de l'animation avec le mixer Three.js
-      mixer = new THREE.AnimationMixer(vrm.scene);
-      const action = mixer.clipAction(targetClip);
-      action.play();
-
-      console.log("Animation Mixamo appliquée avec succès !");
-    },
-    undefined,
-    (error) => console.error('Erreur lors du chargement de l’animation FBX :', error)
-  );
+// Transition douce entre animations
+function playAnimation(name, fade = 0.5) {
+  const next = actions[name];
+  if (!next || next === currentAction) return;
+  next.reset().play();
+  if (currentAction) currentAction.crossFadeTo(next, fade, false);
+  currentAction = next;
 }
 
-// Boucle d'animation principale
+// Test rapide : touches 1 / 2 / 3
+window.addEventListener('keydown', (e) => {
+  if (e.key === '1') playAnimation('typing');
+  if (e.key === '2') playAnimation('gaming');
+  if (e.key === '3') playAnimation('sleeping');
+});
+
+// ---------- Boucle ----------
+const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
-
   const delta = clock.getDelta();
-
-  if (mixer) {
-    mixer.update(delta);
-  }
-
-  if (currentVRM) {
-    currentVRM.update(delta);
-  }
-
+  if (mixer) mixer.update(delta);       // <-- indispensable
+  if (currentVRM) currentVRM.update(delta);
   renderer.render(scene, camera);
 }
-
 animate();
 
-// Redimensionnement de la fenêtre
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
