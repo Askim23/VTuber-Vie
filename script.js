@@ -1,3 +1,4 @@
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
@@ -12,6 +13,15 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 document.body.appendChild(renderer.domElement);
+
+camera.position.set(0, 1.1, 3.2);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.9, 0);   // point regardé : milieu du corps (monte/descends cette valeur)
+controls.enableDamping = true;    // mouvement fluide
+controls.minDistance = 0.5;       // zoom max (près)
+controls.maxDistance = 8;         // zoom min (loin)
+controls.update();
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
